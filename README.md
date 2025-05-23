@@ -2,7 +2,7 @@
 
 ---
 
-````markdown
+
 # 💰 Project Cost Tracker
 
 Track, manage, and analyze project expenses effortlessly.
@@ -31,6 +31,7 @@ Track, manage, and analyze project expenses effortlessly.
 ```bash
 git clone https://github.com/your-username/project-cost-tracker.git
 cd project-cost-tracker
+
 ````
 
 2. **Install dependencies**
