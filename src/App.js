@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useReducer } from 'react';
 import { Edit, Trash2, Plus, LogOut, DollarSign, Package, Receipt } from 'lucide-react';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, getDocs, query, where } from 'firebase/firestore';
 import { app } from './firebase';
 import './App.css';
 
-// Initialize Firebase Auth
 const auth = getAuth(app);
+const db = getFirestore(app);
 const googleProvider = new GoogleAuthProvider();
 
-// Reducer for state management
+// Redux-like state management using useReducer
 const initialState = {
   items: [],
   otherCosts: [],
@@ -175,6 +176,7 @@ function AuthComponent({ onLogin }) {
           <p>{isLogin ? 'Sign in to your account' : 'Create a new account'}</p>
         </div>
         
+        {/* Google Sign In Button */}
         <button 
           type="button" 
           onClick={handleGoogleSignIn} 
@@ -264,8 +266,8 @@ function ItemModal({ isOpen, onClose, item, onSave }) {
     }
 
     const costNumber = parseFloat(cost);
-    if (isNaN(costNumber)) {
-      toast('Please enter a valid number', 'error');
+    if (isNaN(costNumber) || costNumber < 0) {
+      toast('Please enter a valid positive number', 'error');
       return;
     }
 
@@ -276,6 +278,8 @@ function ItemModal({ isOpen, onClose, item, onSave }) {
     });
 
     onClose();
+    setName('');
+    setCost('');
   };
 
   return (
@@ -336,8 +340,8 @@ function OtherCostModal({ isOpen, onClose, cost, onSave }) {
     }
 
     const amountNumber = parseFloat(amount);
-    if (isNaN(amountNumber)) {
-      toast('Please enter a valid number', 'error');
+    if (isNaN(amountNumber) || amountNumber < 0) {
+      toast('Please enter a valid positive number', 'error');
       return;
     }
 
@@ -348,6 +352,8 @@ function OtherCostModal({ isOpen, onClose, cost, onSave }) {
     });
 
     onClose();
+    setDescription('');
+    setAmount('');
   };
 
   return (
@@ -390,34 +396,50 @@ function Dashboard({ user, onLogout }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [sortBy, setSortBy] = useState('name');
   const [filterType, setFilterType] = useState('all');
+  
   const [showItemModal, setShowItemModal] = useState(false);
   const [showCostModal, setShowCostModal] = useState(false);
+  
   const [editingItem, setEditingItem] = useState(null);
   const [editingCost, setEditingCost] = useState(null);
+  
   const { toast, ToastContainer } = useToast();
 
-  // Load data from localStorage when user logs in
+  const loadUserData = async (userId) => {
+    try {
+      dispatch({ type: actionTypes.SET_LOADING, payload: true });
+      
+      // Load items
+      const itemsQuery = query(collection(db, 'items'), where('userId', '==', userId));
+      const itemsSnapshot = await getDocs(itemsQuery);
+      const items = itemsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      dispatch({ type: actionTypes.SET_ITEMS, payload: items });
+      
+      // Load other costs
+      const costsQuery = query(collection(db, 'otherCosts'), where('userId', '==', userId));
+      const costsSnapshot = await getDocs(costsQuery);
+      const costs = costsSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      dispatch({ type: actionTypes.SET_OTHER_COSTS, payload: costs });
+      
+    } catch (error) {
+      toast('Error loading data: ' + error.message, 'error');
+    } finally {
+      dispatch({ type: actionTypes.SET_LOADING, payload: false });
+    }
+  };
+
+  // Add this useEffect to call loadUserData when user changes
   useEffect(() => {
     if (user) {
-      const userData = JSON.parse(localStorage.getItem(`userData_${user.uid}`)) || {
-        items: [],
-        otherCosts: []
-      };
-      dispatch({ type: actionTypes.SET_ITEMS, payload: userData.items });
-      dispatch({ type: actionTypes.SET_OTHER_COSTS, payload: userData.otherCosts });
+      loadUserData(user.uid);
     }
   }, [user]);
-
-  // Save data to localStorage whenever items or costs change
-  useEffect(() => {
-    if (user) {
-      const userData = {
-        items: state.items,
-        otherCosts: state.otherCosts
-      };
-      localStorage.setItem(`userData_${user.uid}`, JSON.stringify(userData));
-    }
-  }, [state.items, state.otherCosts, user]);
 
   // Calculate totals
   const totalItemsCost = state.items.reduce((sum, item) => sum + item.cost, 0);
@@ -461,42 +483,84 @@ function Dashboard({ user, onLogout }) {
     setShowCostModal(true);
   };
 
-  const handleSaveItem = (itemData) => {
+  const handleSaveItem = async (itemData) => {
     try {
+      dispatch({ type: actionTypes.SET_LOADING, payload: true });
+      
       if (editingItem) {
+        const itemRef = doc(db, 'items', itemData.id);
+        await updateDoc(itemRef, {
+          name: itemData.name,
+          cost: itemData.cost,
+          userId: user.uid,
+          updatedAt: new Date()
+        });
         dispatch({ type: actionTypes.UPDATE_ITEM, payload: itemData });
         toast('Item updated successfully!', 'success');
       } else {
-        dispatch({ type: actionTypes.ADD_ITEM, payload: itemData });
+        const docRef = await addDoc(collection(db, 'items'), {
+          ...itemData,
+          userId: user.uid,
+          createdAt: new Date()
+        });
+        dispatch({ type: actionTypes.ADD_ITEM, payload: { ...itemData, id: docRef.id } });
         toast('Item added successfully!', 'success');
       }
     } catch (error) {
       toast('Error saving item: ' + error.message, 'error');
+    } finally {
+      dispatch({ type: actionTypes.SET_LOADING, payload: false });
     }
   };
 
-  const handleDeleteItem = (itemId) => {
-    dispatch({ type: actionTypes.DELETE_ITEM, payload: itemId });
-    toast('Item deleted successfully!', 'success');
+  const handleDeleteItem = async (itemId) => {
+    try {
+      await deleteDoc(doc(db, 'items', itemId));
+      dispatch({ type: actionTypes.DELETE_ITEM, payload: itemId });
+      toast('Item deleted successfully!', 'success');
+    } catch (error) {
+      toast('Error deleting item: ' + error.message, 'error');
+    }
   };
 
-  const handleSaveOtherCost = (costData) => {
+  const handleSaveOtherCost = async (costData) => {
     try {
+      dispatch({ type: actionTypes.SET_LOADING, payload: true });
+      
       if (editingCost) {
+        const costRef = doc(db, 'otherCosts', costData.id);
+        await updateDoc(costRef, {
+          description: costData.description,
+          amount: costData.amount,
+          userId: user.uid,
+          updatedAt: new Date()
+        });
         dispatch({ type: actionTypes.UPDATE_OTHER_COST, payload: costData });
         toast('Cost updated successfully!', 'success');
       } else {
-        dispatch({ type: actionTypes.ADD_OTHER_COST, payload: costData });
+        const docRef = await addDoc(collection(db, 'otherCosts'), {
+          ...costData,
+          userId: user.uid,
+          createdAt: new Date()
+        });
+        dispatch({ type: actionTypes.ADD_OTHER_COST, payload: { ...costData, id: docRef.id } });
         toast('Cost added successfully!', 'success');
       }
     } catch (error) {
       toast('Error saving cost: ' + error.message, 'error');
+    } finally {
+      dispatch({ type: actionTypes.SET_LOADING, payload: false });
     }
   };
 
-  const handleDeleteOtherCost = (costId) => {
-    dispatch({ type: actionTypes.DELETE_OTHER_COST, payload: costId });
-    toast('Cost deleted successfully!', 'success');
+  const handleDeleteOtherCost = async (costId) => {
+    try {
+      await deleteDoc(doc(db, 'otherCosts', costId));
+      dispatch({ type: actionTypes.DELETE_OTHER_COST, payload: costId });
+      toast('Cost deleted successfully!', 'success');
+    } catch (error) {
+      toast('Error deleting cost: ' + error.message, 'error');
+    }
   };
 
   const handleLogout = async () => {
